@@ -44,6 +44,7 @@ directional_attack:
   # For examples, Mage’s Magic Claw, Thief’s dart throw, or even a snail shell toss are all directional attack
   range_x: 350               # ↔️ Horizontal attack range (in pixels)
   range_y: 70                # ↕️ Vertical attack range (in pixels)
+  range_y_offset: 0          # ↕️ Shift attack box vertically; negative moves it upward
   cooldown: 0.9              # ⏱️ Time between attacks (in seconds)
   character_turn_delay: 0.02 # 🔄 Delay after turning before attacking (in seconds)
 
@@ -95,6 +96,20 @@ party_red_bar:
   create_party_button_cn_thres: 0.04   # 📏 threshold for create party button matching
   create_party_button_eng_thres: 0.04 # 📏 threshold for create party button matching
 
+player_marker:
+  # 🎯 Player Marker Detection
+  # Locate this character by matching the unique title/icon displayed near it.
+  # Template and offset use the calibrated x/y scale below.
+  enable: True
+  path: "C:/Users/Kisn/WorkBuddy/2026-08-23-17-11-25/maplestory-auto-ds/character/title.png"
+  template_scale: [0.70, 0.55] # [x, y] calibrated against the current game capture
+  offset: [0, -60]             # Unscaled template bottom-center -> character position
+  diff_thres: 0.24             # SQDIFF_NORMED; lower is a better match
+  blur_kernel: 3
+  local_search_radius: 180     # Track near the previous match before searching globally
+  max_jump: 140                # Reject weak matches that suddenly jump to another marker
+  strong_match_thres: 0.06     # A very strong match may bypass max_jump
+
 nametag:
   # 🏷️ NameTag Recognition
   # ⚠️ This feature is deprecated, using party red bar is way better than detecting nametag.
@@ -132,8 +147,8 @@ monster_detect:
   #   - "contour_only"  (fast, contour-based, a good balance)
   #   - "template_free" (lightest and fastest, but likely to have many wrong detection)
   # 💡 Feel free to test different modes to find what works best for your setup.
-  mode: "contour_only"         # 🧠 Options: "color" "grayscale" "contour_only" "template_free"
-  diff_thres: 0.8              # 📏 Diff threshold for template matching, [0.0 ~ 1.0] Lower = stricter match
+  mode: "grayscale"            # 🧠 Options: "color" "grayscale" "contour_only" "template_free"
+  diff_thres: 0.22             # 📏 SQDIFF threshold; lower = stricter match
   search_box_margin: 50        # ➕ Additional margin(in pixels) around the attack box for monster searching
   contour_blur: 5              # 🌫️ Gaussian blur kernel size used for contour smoothing (in "contour_only" mode).
   with_enemy_hp_bar: True      # ❤️ Enable smarter detection using enemy HP bars.
@@ -283,6 +298,14 @@ patrol:
   # 🚶‍♂️ Patrol Mode
   # In this mode, the player will walk back and forth and attack periodically.
   # It doesn't rely on monster detection or a minimap — just pure action!
+  move_enable: True              # Set False to stay in place and only attack
+  detect_monsters: False         # Use the monster templates listed below
+  monsters: []                   # Example: [evil_eye]
+  monster_template_scale: 1.0    # Resize patrol monster templates for the current game resolution
+  idle_move_enable: False        # Occasionally take a tiny step while guarding one spot
+  idle_move_interval: [6.0, 14.0] # Random seconds between tiny movements
+  idle_move_duration: [0.16, 0.28] # Random key-hold duration for roughly 1-3 steps
+  idle_move_max_offset: 35       # Stay within this many pixels of the initial position
   range: [0.2, 0.8]               # ↔️ [0.0 ~ 1.0] Patrol boundaries (relative to screen width)
                                   #     - 0.0 = Left edge of the game window
                                   #     - 1.0 = Right edge
@@ -301,8 +324,8 @@ route_recoder:
 game_window:
   # 🪟 Game Window
   # Basic information about the game window setup
-  title: "MapleStory Worlds"   # 🎮 Game window title (used to detect the correct window)
-  size: [693, 1282]            # 📐 Game window size [height, width] in pixels, (Excluded title bar size)
+  title: "冒险岛怀旧服"   # 🎮 Game window title (used to detect the correct window)
+  size: [689, 1274]            # 📐 Captured client size [height, width] after window resizing
   ratio_tolerance: 0.08        # 📐 Game window 16:9 tolerance
   title_bar_height: 59         # 📐 Title Bar Height (Note it's before window resize)
 

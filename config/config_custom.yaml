@@ -1,0 +1,28 @@
+bot:
+  map: ant_cave_2
+  mode: patrol
+directional_attack:
+  character_turn_delay: 0.05
+  range_y: 140
+  range_y_offset: -40
+health_monitor:
+  add_hp_percent: 0
+  add_mp_percent: 0
+key:
+  aoe_skill: control
+  directional_attack: control
+  teleport: shift
+monster_detect:
+  diff_thres: 0.24
+  with_enemy_hp_bar: false
+nametag:
+  enable: true
+  mode: histogram_eq
+patrol:
+  detect_monsters: true
+  idle_move_enable: true
+  monster_template_scale: 0.95
+  monsters:
+  - evil_eye
+  move_enable: false
+  patrol_attack_interval: 0.9

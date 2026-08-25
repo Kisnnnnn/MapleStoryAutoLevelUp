@@ -183,8 +183,9 @@ def nms(monsters, iou_threshold=0.3):
         # [x1, y1, x2, y2, score, original_data]
         boxes.append([x, y, x + w, y + h, m["score"], m])
 
-    # Sort by score descending
-    boxes.sort(key=lambda x: x[4], reverse=True)
+    # TM_SQDIFF_NORMED is used by monster detection, where a lower score is a
+    # better match. Keep the lowest-scoring box when detections overlap.
+    boxes.sort(key=lambda x: x[4])
 
     keep = []
     while boxes:

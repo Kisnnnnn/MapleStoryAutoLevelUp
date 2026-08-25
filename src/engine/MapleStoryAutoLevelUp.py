@@ -80,6 +80,7 @@ class MapleStoryAutoBot:
         self.is_frame_done = False #
         # Coordinate (top-left coordinate)
         self.loc_nametag = (0, 0) # nametag location on game screen
+        self.loc_player_marker = None # player marker location on game screen
         self.loc_party_red_bar = (0, 0) # party red bar location on game screen
         self.loc_minimap = (0, 0) # minimap location on game screen
         self.loc_player = (0, 0) # player location on game screen
@@ -107,6 +108,8 @@ class MapleStoryAutoBot:
         self.img_routes = []
         self.img_nametag = None
         self.img_nametag_gray = None
+        self.img_player_marker = None
+        self.img_player_marker_gray = None
         self.img_create_party_enable = None
         self.img_create_party_disable = None
         self.img_login_button = None
@@ -159,6 +162,9 @@ class MapleStoryAutoBot:
             for k, v in cfg["route"]["color_code_up_down"].items()
         }
 
+        self.monsters_info = {}
+        monster_names = []
+
         if cfg["bot"]["mode"] == "normal":
             map_name = cfg['bot']['map']
             # Check if the map is supported in config_data.yaml
@@ -168,6 +174,7 @@ class MapleStoryAutoBot:
                 logger.error(text)
                 return -1
                 # raise RuntimeError(text)
+            monster_names = self.data["map_mobs_mapping"][map_name]
 
             # Load map.png from minimaps/
             self.img_map = load_image(f"minimaps/{map_name}/map.png",
@@ -183,22 +190,32 @@ class MapleStoryAutoBot:
                 img = mask_route_colors(self.img_map, img, cfg["route"]["color_code_up_down"])
                 self.img_routes.append(img)
 
-            # Load monsters images from monster/<monster_name>
-            for monster_name in self.data["map_mobs_mapping"][map_name]:
-                imgs = []
-                for file in glob.glob(f"monster/{monster_name}/{monster_name}*.png"):
-                    # Add original image
-                    img = load_image(file)
-                    imgs.append((img, get_mask(img, (0, 255, 0))))
-                    # Add flipped image
-                    img_flip = cv2.flip(img, 1)
-                    imgs.append((img_flip, get_mask(img_flip, (0, 255, 0))))
-                if imgs:
-                    self.monsters_info[monster_name] = imgs
-                else:
-                    logger.error(f"No images found in monster/{monster_name}/{monster_name}*")
-                    return -1
-                    # raise RuntimeError(f"No images found in monster/{monster_name}/{monster_name}*")
+        elif cfg["bot"]["mode"] == "patrol":
+            monster_names = cfg["patrol"].get("monsters", [])
+
+        # Load monster images used by normal routes or stationary patrol.
+        for monster_name in monster_names:
+            imgs = []
+            for file in glob.glob(f"monster/{monster_name}/{monster_name}*.png"):
+                # Add original image
+                img = load_image(file)
+                if cfg["bot"]["mode"] == "patrol":
+                    scale = cfg["patrol"].get("monster_template_scale", 1.0)
+                    if scale != 1.0:
+                        width = max(1, round(img.shape[1] * scale))
+                        height = max(1, round(img.shape[0] * scale))
+                        img = cv2.resize(img, (width, height),
+                                         interpolation=cv2.INTER_NEAREST)
+                imgs.append((img, get_mask(img, (0, 255, 0))))
+                # Add flipped image
+                img_flip = cv2.flip(img, 1)
+                imgs.append((img_flip, get_mask(img_flip, (0, 255, 0))))
+            if imgs:
+                self.monsters_info[monster_name] = imgs
+            else:
+                logger.error(f"No images found in monster/{monster_name}/{monster_name}*")
+                return -1
+        if monster_names:
             logger.info(f"Loaded monsters: {list(self.monsters_info.keys())}")
 
         # Load player's name tag
@@ -206,6 +223,19 @@ class MapleStoryAutoBot:
             self.img_nametag = load_image(f"nametag/{cfg['nametag']['name']}.png")
             self.img_nametag_gray = load_image(f"nametag/{cfg['nametag']['name']}.png",
                                                cv2.IMREAD_GRAYSCALE)
+
+        # Load the unique marker/title used to identify this character. The
+        # supplied template was captured at a different working resolution, so
+        # resize it once here instead of doing multi-scale matching every frame.
+        if cfg["player_marker"]["enable"]:
+            marker = load_image(cfg["player_marker"]["path"])
+            scale_x, scale_y = cfg["player_marker"]["template_scale"]
+            marker_w = max(1, round(marker.shape[1] * scale_x))
+            marker_h = max(1, round(marker.shape[0] * scale_y))
+            self.img_player_marker = cv2.resize(
+                marker, (marker_w, marker_h), interpolation=cv2.INTER_AREA)
+            self.img_player_marker_gray = cv2.cvtColor(
+                self.img_player_marker, cv2.COLOR_BGR2GRAY)
 
         # Load misc image
         lang = cfg["system"]["language"]
@@ -529,6 +559,61 @@ class MapleStoryAutoBot:
 
         return loc_player, loc_party_red_bar
 
+    def get_player_location_by_marker(self):
+        '''Locate this character by matching its unique title/icon.'''
+        marker_cfg = self.cfg["player_marker"]
+        img_camera = self.img_frame_gray[
+            :self.cfg["ui_coords"]["ui_y_start"], :]
+
+        blur_kernel = int(marker_cfg["blur_kernel"])
+        if blur_kernel > 1:
+            if blur_kernel % 2 == 0:
+                blur_kernel += 1
+            img_camera = cv2.GaussianBlur(
+                img_camera, (blur_kernel, blur_kernel), 0)
+            img_marker = cv2.GaussianBlur(
+                self.img_player_marker_gray, (blur_kernel, blur_kernel), 0)
+        else:
+            img_marker = self.img_player_marker_gray
+
+        scale_x, scale_y = marker_cfg["template_scale"]
+        search_radius = max(1, round(marker_cfg["local_search_radius"] * scale_x))
+
+        loc, score, _ = find_pattern_sqdiff(
+            img_camera,
+            img_marker,
+            last_result=self.loc_player_marker,
+            local_search_radius=search_radius,
+            global_threshold=marker_cfg["diff_thres"]
+        )
+
+        if score >= marker_cfg["diff_thres"]:
+            return None
+
+        # Avoid jumping to another similar title after a stable lock. A nearly
+        # exact match is still accepted so the tracker can recover after a warp.
+        if self.loc_player_marker is not None:
+            jump = ((loc[0] - self.loc_player_marker[0]) ** 2 +
+                    (loc[1] - self.loc_player_marker[1]) ** 2) ** 0.5
+            max_jump = marker_cfg["max_jump"] * max(scale_x, scale_y)
+            if jump > max_jump and score > marker_cfg["strong_match_thres"]:
+                return None
+
+        self.loc_player_marker = loc
+        marker_h, marker_w = self.img_player_marker_gray.shape
+        offset_x = round(marker_cfg["offset"][0] * scale_x)
+        offset_y = round(marker_cfg["offset"][1] * scale_y)
+        loc_player = (
+            loc[0] + marker_w // 2 + offset_x,
+            loc[1] + marker_h + offset_y
+        )
+
+        draw_rectangle(
+            self.img_frame_debug, loc, (marker_h, marker_w),
+            (255, 0, 0), f"player marker,{score:.3f}",
+            thickness=2, text_height=0.5)
+        return loc_player
+
     def get_player_location_on_global_map(self):
         '''
         get_player_location_on_global_map
@@ -679,13 +764,16 @@ class MapleStoryAutoBot:
             y1 = min(self.img_frame.shape[0], self.loc_player[1] + dy)
 
         elif self.cfg["bot"]["attack"] == "directional":
+            range_y_offset = self.cfg["directional_attack"].get(
+                "range_y_offset", 0)
             if is_left:
                 x0 = self.loc_player[0] - self.cfg["directional_attack"]["range_x"]
                 x1 = self.loc_player[0]
             else:
                 x0 = self.loc_player[0]
                 x1 = x0 + self.cfg["directional_attack"]["range_x"]
-            y0 = self.loc_player[1] - self.cfg["directional_attack"]["range_y"] // 2
+            y0 = self.loc_player[1] + range_y_offset - \
+                self.cfg["directional_attack"]["range_y"] // 2
             y1 = y0 + self.cfg["directional_attack"]["range_y"]
         else:
             raise RuntimeError(f"Unsupported attack mode: {self.cfg['bot']['attack']}")
@@ -716,7 +804,7 @@ class MapleStoryAutoBot:
         min_distance = float('inf')
         for monster in self.monsters:
             mx1, my1 = monster["position"]
-            mw, mh = monster["size"]
+            mh, mw = monster["size"]
             mx2 = mx1 + mw
             my2 = my1 + mh
 
@@ -768,7 +856,8 @@ class MapleStoryAutoBot:
         monsters = []
         for monster_name, monster_imgs in self.monsters_info.items():
             for img_monster, mask_monster in monster_imgs:
-                if self.cfg["bot"]["mode"] == "patrol":
+                if self.cfg["bot"]["mode"] == "patrol" and \
+                        not self.cfg["patrol"].get("detect_monsters", False):
                     pass # Don't detect monster using template in patrol mode
                 elif self.cfg["monster_detect"]["mode"] == "template_free":
                     # Generate mask where pixel is exactly (0,0,0)
@@ -1297,7 +1386,7 @@ class MapleStoryAutoBot:
         distance_left = float('inf')
         if monster_left is not None:
             mx, my = monster_left["position"]
-            mw, mh = monster_left["size"]
+            mh, mw = monster_left["size"]
             center_left = (mx + mw // 2, my + mh // 2)
             distance_left = abs(center_left[0] - self.loc_player[0]) + \
                             abs(center_left[1] - self.loc_player[1])
@@ -1305,7 +1394,7 @@ class MapleStoryAutoBot:
         distance_right = float('inf')
         if monster_right is not None:
             mx, my = monster_right["position"]
-            mw, mh = monster_right["size"]
+            mh, mw = monster_right["size"]
             center_right = (mx + mw // 2, my + mh // 2)
             distance_right = abs(center_right[0] - self.loc_player[0]) + \
                             abs(center_right[1] - self.loc_player[1])
@@ -1318,7 +1407,7 @@ class MapleStoryAutoBot:
             if monster is None:
                 return False
             mx, my = monster["position"]
-            mw, mh = monster["size"]
+            mh, mw = monster["size"]
             monster_center_x = mx + mw // 2
             player_x = self.loc_player[0]
 
@@ -1614,7 +1703,9 @@ class MapleStoryAutoBot:
         ### Player Location Detection ###
         #################################
         # Get player location in game window
-        if self.cfg["nametag"]["enable"]:
+        if self.cfg["player_marker"]["enable"]:
+            loc_player = self.get_player_location_by_marker()
+        elif self.cfg["nametag"]["enable"]:
             loc_player = self.get_player_location_by_nametag()
         else:
             loc_player, loc_party_red_bar = self.get_player_location_by_party_red_bar()
@@ -1758,10 +1849,15 @@ class MapleStoryAutoBot:
         Auto Bot main loop
         Only run when call autobot from UI framework and AutoBotController
         '''
-        # Make sure player is in party
+        # Keyboard input is sent to the foreground window, so the game must
+        # always be activated before the controller loop starts.
         if not is_mac():
             activate_game_window(self.capture.window_title)
             time.sleep(0.3)
+
+        # The party is only required by party-red-bar localization.
+        if not is_mac() and not self.cfg["player_marker"]["enable"] and \
+                not self.cfg["nametag"]["enable"]:
             self.ensure_is_in_party()
 
         while not self.kb.is_terminated:
@@ -1778,9 +1874,10 @@ class MapleStoryAutoBot:
                 if self.is_show_debug_window and self.is_ui:
                     img_frame_debug_emit = self.img_frame_debug[:
                         self.cfg["ui_coords"]["ui_y_start"], :].copy()
-                    img_route_debug_emit = self.img_route_debug.copy()
                     self.image_debug_signal.emit(img_frame_debug_emit)
-                    self.route_map_viz_signal.emit(img_route_debug_emit)
+                    if self.img_route_debug is not None:
+                        img_route_debug_emit = self.img_route_debug.copy()
+                        self.route_map_viz_signal.emit(img_route_debug_emit)
             else:
                 pass
                 # logger.warning("Skipped debug window update due to invalid frame.")

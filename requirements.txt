@@ -1,6 +1,7 @@
 opencv-python
 numpy
 pyautogui
+pydirectinput
 pynput
 requests
 pyyaml

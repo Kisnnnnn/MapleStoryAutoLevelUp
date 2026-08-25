@@ -64,32 +64,58 @@ def clear_debug_canvas(canvas):
     canvas.setAlignment(Qt.AlignCenter)
 
 class SingleKeyEdit(QKeySequenceEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._key_value = ""
+
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
         modifiers = event.modifiers()
 
         # Allow modifier-only keys
         if key in (Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta):
+            self._key_value = {
+                Qt.Key_Shift: "shift",
+                Qt.Key_Control: "control",
+                Qt.Key_Alt: "alt",
+                Qt.Key_Meta: "meta",
+            }[key]
             self.setKeySequence(QKeySequence(key))
             return
 
         # Otherwise, record only one key (replace previous)
-        if modifiers:
-            # This prevents combos like Ctrl+A
-            self.setKeySequence(QKeySequence(key))
-        else:
-            self.setKeySequence(QKeySequence(key))
+        sequence = QKeySequence(key)
+        self.setKeySequence(sequence)
+        self._key_value = sequence.toString(
+            QKeySequence.NativeText).strip().lower()
 
     def set_key(self, key_str):
         """
         Set the key sequence from string like 'A', 'F1', etc.
         """
-        self.setKeySequence(QKeySequence(key_str))
+        aliases = {
+            "ctrl": "control",
+            "ctl": "control",
+        }
+        modifier_keys = {
+            "control": Qt.Key_Control,
+            "shift": Qt.Key_Shift,
+            "alt": Qt.Key_Alt,
+        }
+        normalized = str(key_str).strip().lower()
+        normalized = aliases.get(normalized, normalized)
+        self._key_value = normalized
+        if normalized in modifier_keys:
+            self.setKeySequence(QKeySequence(modifier_keys[normalized]))
+        else:
+            self.setKeySequence(QKeySequence(key_str))
 
     def get_key(self):
         """
         Return the currently set key as a string, like 'A', 'F1', etc.
         """
+        if self._key_value:
+            return self._key_value
         seq = self.keySequence()
         return seq.toString(QKeySequence.NativeText).strip().lower()
 

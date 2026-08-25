@@ -12,21 +12,38 @@ from pynput import keyboard
 
 # Local import
 from src.utils.logger import logger
-from src.utils.common import is_mac
+from src.utils.common import is_mac, activate_game_window
 
 if is_mac():
     import Quartz
 else:
     import pygetwindow as gw
+    import pydirectinput
 
 pyautogui.PAUSE = 0  # remove delay
+input_backend = pyautogui if is_mac() else pydirectinput
+input_backend.PAUSE = 0
+
+KEY_ALIASES = {
+    "control": "ctrl",
+    "ctl": "ctrl",
+}
+
+def normalize_key(key):
+    '''
+    Convert UI-friendly key names to names accepted by pyautogui.
+    '''
+    if not isinstance(key, str):
+        return key
+    normalized = key.strip().lower()
+    return KEY_ALIASES.get(normalized, normalized)
 
 def key_down(key):
     '''
     Press key down
     '''
     try:
-        pyautogui.keyDown(key)
+        input_backend.keyDown(normalize_key(key))
     except pyautogui.FailSafeException:
         logger.warning("[key_down] pyautogui failsafe triggered during key_down.")
         recover_mouse()
@@ -36,7 +53,7 @@ def key_up(key):
     Release key
     '''
     try:
-        pyautogui.keyUp(key)
+        input_backend.keyUp(normalize_key(key))
     except pyautogui.FailSafeException:
         logger.warning("[key_up] pyautogui failsafe triggered during key_up.")
         recover_mouse()
@@ -53,7 +70,7 @@ def recover_mouse():
 
     pyautogui.FAILSAFE = True # Recover failsafe
 
-def press_key(key, duration=0.05):
+def press_key(key, duration=0.12):
     '''
     Simulates a key press for a specified duration
     '''
@@ -82,6 +99,7 @@ class KeyBoardController():
         self.t_last_screenshot = 0.0
         self.t_last_jump_down = 0.0
         self.t_last_run = time.time()
+        self.t_last_focus_recovery = 0.0
         self.t_last_skill = 0.0 # Last time character perform action(attack, cast spell, ...)
         self.t_last_buff_cast = [0] * len(self.cfg["buff_skill"]["keys"]) # Last time cast buff skill
         # Flags
@@ -111,6 +129,7 @@ class KeyBoardController():
             self.attack_key = cfg["key"]["directional_attack"]
         else:
             raise ValueError(f"Unexpected attack type: {cfg['bot']['attack']}")
+        self.attack_key = normalize_key(self.attack_key)
 
         # Start keyboard control thread
         threading.Thread(target=self.run, daemon=True).start()
@@ -203,8 +222,20 @@ class KeyBoardController():
         run
         '''
         while not self.is_terminated:
-            # Check if game window is active
-            if not self.is_enable or not self.is_game_window_active():
+            if not self.is_enable:
+                self.limit_fps()
+                continue
+
+            # pyautogui sends input only to the foreground window. Recover the
+            # game focus automatically if the user opened the bot UI while it
+            # was running. Pause with F1 before interacting with the UI.
+            if not self.is_game_window_active():
+                if not is_mac() and time.time() - self.t_last_focus_recovery >= 0.5:
+                    self.t_last_focus_recovery = time.time()
+                    try:
+                        activate_game_window(self.window_title)
+                    except Exception as e:
+                        logger.warning(f"[KeyBoardController] Unable to activate game window: {e}")
                 self.limit_fps()
                 continue
 
@@ -274,6 +305,13 @@ class KeyBoardController():
             elif self.cmd_action == "teleport":
                 press_key(self.cfg["key"]["teleport"])
             elif self.cmd_action == "attack":
+                if self.cmd_left_right in ("left", "right"):
+                    # The direction key is already down from the movement block.
+                    # Hold it just long enough for the game to change facing,
+                    # then release it before sending the attack scan code.
+                    time.sleep(self.cfg["directional_attack"].get(
+                        "character_turn_delay", 0.05))
+                    key_up(self.cmd_left_right)
                 press_key(self.attack_key)
                 self.t_last_skill = time.time()
             elif self.cmd_action == "add_hp":
